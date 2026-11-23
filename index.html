@@ -1,0 +1,931 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#050505">
+  <title>ASCII Flower Bouquet</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #050505;
+      color: #f4f8fb;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: #050505;
+    }
+
+    body {
+      min-height: 100dvh;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    #app {
+      width: min(100vw, 960px);
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      background: #050505;
+    }
+
+    #canvas {
+      display: block;
+      width: 100%;
+      min-height: 0;
+      flex: 1 1 auto;
+      background: #050505;
+    }
+
+    .controls {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px max(10px, env(safe-area-inset-bottom));
+      background: #101114;
+      border-top: 1px solid #25272d;
+    }
+
+    .controls label {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    button {
+      min-height: 44px;
+      padding: 0 13px;
+      border: 1px solid #3a3d45;
+      border-radius: 10px;
+      background: #1b1d22;
+      color: #f4f8fb;
+      font: inherit;
+      font-size: 15px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    button:hover,
+    button:focus-visible {
+      background: #282b32;
+    }
+
+    button:focus-visible {
+      outline: 3px solid rgba(200, 156, 255, 0.35);
+      outline-offset: 1px;
+    }
+
+    #apply {
+      background: #8b5cf6;
+      border-color: #a78bfa;
+      color: #fff;
+    }
+
+    #status {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+  </style>
+</head>
+<body>
+  <main id="app">
+    <canvas id="canvas" role="img" aria-label="A spinning 3D ASCII flower bouquet"></canvas>
+    <div class="controls" id="controls">
+      <button id="share" type="button">Share link</button>
+      <button id="play" type="button">Pause</button>
+      <span id="status" role="status" aria-live="polite"></span>
+    </div>
+  </main>
+
+  <script>
+    "use strict";
+
+    const canvas = document.getElementById("canvas");
+    const context = canvas.getContext("2d");
+    const controls = document.getElementById("controls");
+    const shareButton = document.getElementById("share");
+    const playButton = document.getElementById("play");
+    const status = document.getElementById("status");
+
+    const FPS = 30;
+    const SPIN_SPEED = 0.6;
+    const TILT = 0.30;
+    const CAM_DIST = 4.0;
+    const DEFAULT_MESSAGE = "For Jana ♥";
+    const NUM_HEARTS = 18;
+    const PIVOT_Y = 0.2;
+    const SHADE = ".:-=+*%@";
+    const PETAL_SHADE = "+*#%";
+    const TAU = Math.PI * 2;
+
+    const WHITE = [244, 248, 251, 254, 255, 231];
+    const PINK = [125, 162, 168, 205, 211, 218, 225];
+    const RED = [52, 88, 124, 160, 196, 203];
+    const PURPLE = [54, 91, 97, 134, 140, 183];
+    const YELLOW = [136, 178, 214, 220, 226, 229];
+    const ORANGE = [130, 166, 202, 208, 214, 216];
+    const GOLD_CENTER = [94, 136, 178, 214, 220];
+    const DARK_CENTER = [52, 58, 94, 130, 136];
+    const GREENS = [22, 28, 28, 34, 35, 71, 77, 114];
+    const PAPER = [101, 144, 187, 223, 230, 231];
+    const RIBBON = [88, 125, 161, 197, 204, 211];
+    const HEART_COLORS = [161, 197, 204, 205, 211, 218];
+    const MSG_COLORS = [161, 168, 205, 211, 218, 225, 218, 211, 205, 168];
+
+    const DISC_TYPES = [
+      [WHITE, GOLD_CENTER, 13],
+      [PINK, GOLD_CENTER, 8],
+      [RED, DARK_CENTER, 6],
+      [PURPLE, GOLD_CENTER, 7],
+      [YELLOW, DARK_CENTER, 12],
+      [ORANGE, DARK_CENTER, 9]
+    ];
+    const TULIP_COLORS = [RED, PINK, YELLOW];
+
+    const light = norm([-0.45, 0.6, 0.66]);
+    const LX = light[0];
+    const LY = light[1];
+    const LZ = light[2];
+    const colorCache = new Map();
+
+    let currentMessage = DEFAULT_MESSAGE;
+    let scene = buildScene();
+    let hearts = [];
+    let layout = null;
+    let paused = false;
+    let elapsed = 0;
+    let previousTime = performance.now();
+    let frameAccumulator = 0;
+
+    function setStatus(message) {
+      status.textContent = message;
+      window.setTimeout(function () {
+        if (status.textContent === message) {
+          status.textContent = "";
+        }
+      }, 1800);
+    }
+
+    function norm(vector) {
+      const magnitude = Math.sqrt(
+        vector[0] * vector[0] +
+        vector[1] * vector[1] +
+        vector[2] * vector[2]
+      ) || 1;
+      return [
+        vector[0] / magnitude,
+        vector[1] / magnitude,
+        vector[2] / magnitude
+      ];
+    }
+
+    function cross(a, b) {
+      return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0]
+      ];
+    }
+
+    function add(point, direction, amount) {
+      return [
+        point[0] + direction[0] * amount,
+        point[1] + direction[1] * amount,
+        point[2] + direction[2] * amount
+      ];
+    }
+
+    function seededRandom(seed) {
+      return function () {
+        let value = seed += 0x6D2B79F5;
+        value = Math.imul(value ^ (value >>> 15), value | 1);
+        value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+        return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    function buildScene() {
+      const rnd = seededRandom(21);
+      const points = [];
+      const neck = [0, -0.12, 0];
+      const center = [0, 0.12, 0];
+      const radius = 0.64;
+      const count = 10;
+      const golden = Math.PI * (3 - Math.sqrt(5));
+      const heads = [];
+
+      for (let i = 0; i < count; i += 1) {
+        const elevation = (88 - 60 * Math.sqrt(i / (count - 1))) * Math.PI / 180;
+        const azimuth = i * golden;
+        const direction = [
+          Math.cos(elevation) * Math.cos(azimuth),
+          Math.sin(elevation),
+          Math.cos(elevation) * Math.sin(azimuth)
+        ];
+        const position = add(center, direction, radius * (0.92 + rnd() * 0.13));
+        heads.push({ position: position, axis: norm(direction) });
+      }
+
+      const tulipSlots = new Set([3, 8]);
+      const flowers = [];
+      let discIndex = 0;
+
+      heads.forEach(function (head, index) {
+        const base = add(head.position, head.axis, -0.03);
+
+        for (let j = 0; j < 70; j += 1) {
+          const t = j / 69;
+          const point = [
+            base[0] + (neck[0] - base[0]) * t,
+            base[1] + (neck[1] - base[1]) * t,
+            base[2] + (neck[2] - base[2]) * t
+          ];
+          points.push({
+            position: point,
+            normal: [head.axis[0], 0, head.axis[2]],
+            palette: GREENS,
+            tone: -0.15,
+            twoSided: true,
+            override: null
+          });
+        }
+
+        if (tulipSlots.has(index)) {
+          const tulipNumber = Array.from(tulipSlots).filter(function (slot) {
+            return slot < index;
+          }).length;
+          flowers.push({
+            position: head.position,
+            kind: "tulip",
+            palette: TULIP_COLORS[tulipNumber % TULIP_COLORS.length],
+            centerPalette: null,
+            petals: 0,
+            radius: 0.11,
+            seed: rnd() * TAU
+          });
+        } else {
+          const type = DISC_TYPES[discIndex % DISC_TYPES.length];
+          discIndex += 1;
+          flowers.push({
+            position: head.position,
+            kind: "disc",
+            palette: type[0],
+            centerPalette: type[1],
+            petals: type[2],
+            radius: 0.12 + rnd() * 0.02,
+            seed: rnd() * TAU
+          });
+        }
+      });
+
+      for (let i = 0; i < 8; i += 1) {
+        const angle = (i + 0.4) / 8 * TAU;
+        const cosine = Math.cos(angle);
+        const sine = Math.sin(angle);
+        const base = [0.26 * cosine, 0.30, 0.26 * sine];
+        const direction = norm([cosine, 0.15, sine]);
+        const side = [-sine, 0, cosine];
+        const normal = norm(cross(side, direction));
+        const length = 0.30;
+        const width = 0.07;
+
+        for (let ti = 0; ti < 32; ti += 1) {
+          const t = ti / 31;
+          for (let wi = -5; wi <= 5; wi += 1) {
+            const w = wi / 5;
+            const curl = 0.025 * w * w;
+            const point = [
+              base[0] + direction[0] * length * t + side[0] * width * Math.sin(Math.PI * t) * w + normal[0] * curl,
+              base[1] + direction[1] * length * t - 0.10 * t * t + normal[1] * curl,
+              base[2] + direction[2] * length * t + side[2] * width * Math.sin(Math.PI * t) * w + normal[2] * curl
+            ];
+            points.push({
+              position: point,
+              normal: normal,
+              palette: GREENS,
+              tone: wi === 0 ? -0.25 : 0,
+              twoSided: true,
+              override: null
+            });
+          }
+        }
+      }
+
+      const y0 = -0.20;
+      const y1 = 0.30;
+      const r0 = 0.06;
+      const r1 = 0.36;
+      const slope = (r1 - r0) / (y1 - y0);
+      const rings = 50;
+
+      for (let i = 0; i < rings; i += 1) {
+        const t = i / (rings - 1);
+        const ringRadius = r0 + (r1 - r0) * t;
+        const ringCount = Math.max(8, Math.floor(170 * ringRadius));
+
+        for (let j = 0; j < ringCount; j += 1) {
+          const phase = (j + rnd()) / ringCount * TAU;
+          const cosine = Math.cos(phase);
+          const sine = Math.sin(phase);
+          let y = y0 + (y1 - y0) * t;
+          if (t > 0.9) {
+            y += 0.03 * Math.sin(9 * phase);
+          }
+          const fold = 0.3 * (Math.abs(Math.sin(5 * phase)) - 0.6);
+          const normal = norm([cosine, -slope, sine]);
+          points.push({
+            position: [ringRadius * cosine, y, ringRadius * sine],
+            normal: normal,
+            palette: PAPER,
+            tone: fold,
+            twoSided: false,
+            override: null
+          });
+        }
+      }
+
+      for (let i = 0; i < 7; i += 1) {
+        const angle = i / 7 * TAU;
+        const startX = 0.025 * Math.cos(angle);
+        const startZ = 0.025 * Math.sin(angle);
+        for (let j = 0; j < 40; j += 1) {
+          const t = j / 39;
+          points.push({
+            position: [
+              startX * (1 + 1.2 * t),
+              -0.20 - 0.30 * t,
+              startZ * (1 + 1.2 * t)
+            ],
+            normal: [Math.cos(angle), 0, Math.sin(angle)],
+            palette: GREENS,
+            tone: -0.1,
+            twoSided: true,
+            override: null
+          });
+        }
+      }
+
+      const ribbonY = -0.12;
+      const ribbonRadius = r0 + slope * (ribbonY - y0) + 0.01;
+
+      for (let j = 0; j < 90; j += 1) {
+        const phase = j / 90 * TAU;
+        for (const dy of [-0.012, 0, 0.012]) {
+          points.push({
+            position: [ribbonRadius * Math.cos(phase), ribbonY + dy, ribbonRadius * Math.sin(phase)],
+            normal: [Math.cos(phase), 0, Math.sin(phase)],
+            palette: RIBBON,
+            tone: 0,
+            twoSided: false,
+            override: null
+          });
+        }
+      }
+
+      const knot = [0, ribbonY, ribbonRadius + 0.01];
+      for (const side of [-1, 1]) {
+        for (let j = 0; j < 70; j += 1) {
+          const phase = j / 70 * TAU;
+          const leftX = side * (0.07 + 0.07 * Math.cos(phase));
+          const leftY = 0.04 * Math.sin(phase) + 0.02 * (0.07 + 0.07 * Math.cos(phase)) / 0.14;
+          for (const fill of [1.0, 0.7]) {
+            points.push({
+              position: [knot[0] + leftX * fill, knot[1] + leftY * fill, knot[2] + 0.01],
+              normal: [side * 0.3, 0.2, 0.93],
+              palette: RIBBON,
+              tone: 0.1,
+              twoSided: true,
+              override: null
+            });
+          }
+        }
+
+        for (let j = 0; j < 30; j += 1) {
+          const t = j / 29;
+          points.push({
+            position: [knot[0] + side * 0.06 * t, knot[1] - 0.15 * t, knot[2] + 0.015],
+            normal: [side * 0.2, 0, 0.98],
+            palette: RIBBON,
+            tone: -0.05 + 0.05 * Math.sin(t * 9),
+            twoSided: true,
+            override: null
+          });
+        }
+      }
+
+      for (const dx of [-0.01, 0, 0.01]) {
+        points.push({
+          position: [dx, ribbonY, knot[2] + 0.02],
+          normal: [0, 0, 1],
+          palette: RIBBON,
+          tone: 0.2,
+          twoSided: true,
+          override: "@"
+        });
+      }
+
+      const babies = [];
+      for (let i = 0; i < 90; i += 1) {
+        const angle = rnd() * TAU;
+        const elevation = 0.3 + rnd() * 1.1;
+        const radiusValue = 0.40 + rnd() * 0.18;
+        babies.push({
+          position: [
+            radiusValue * Math.cos(angle) * Math.cos(elevation),
+            center[1] + radiusValue * Math.sin(elevation),
+            radiusValue * Math.sin(angle) * Math.cos(elevation)
+          ],
+          phase: rnd() * TAU
+        });
+      }
+
+      const sparkles = [];
+      for (let i = 0; i < 30; i += 1) {
+        const angle = rnd() * TAU;
+        const radiusValue = 0.75 + rnd() * 0.20;
+        sparkles.push({
+          position: [
+            radiusValue * Math.cos(angle),
+            -0.3 + rnd() * 1.3,
+            radiusValue * Math.sin(angle)
+          ],
+          phase: rnd() * TAU,
+          speed: 1.5 + rnd() * 2.5
+        });
+      }
+
+      return {
+        points: points,
+        flowers: flowers,
+        babies: babies,
+        sparkles: sparkles
+      };
+    }
+
+    function updateHearts(deltaTime) {
+      while (hearts.length < NUM_HEARTS) {
+        hearts.push({
+          x: Math.random(),
+          y: 1 + Math.random(),
+          speed: 0.03 + Math.random() * 0.05,
+          phase: Math.random() * TAU,
+          color: HEART_COLORS[Math.floor(Math.random() * HEART_COLORS.length)]
+        });
+      }
+
+      hearts.forEach(function (heart) {
+        heart.y -= heart.speed * deltaTime;
+        if (heart.y < 0) {
+          heart.x = Math.random();
+          heart.y = 1;
+          heart.color = HEART_COLORS[Math.floor(Math.random() * HEART_COLORS.length)];
+        }
+      });
+    }
+
+    function ansi256(number) {
+      if (colorCache.has(number)) {
+        return colorCache.get(number);
+      }
+
+      const base = [
+        "#000000", "#800000", "#008000", "#808000",
+        "#000080", "#800080", "#008080", "#c0c0c0",
+        "#808080", "#ff0000", "#00ff00", "#ffff00",
+        "#0000ff", "#ff00ff", "#00ffff", "#ffffff"
+      ];
+      let color;
+
+      if (number < 16) {
+        color = base[number];
+      } else if (number >= 232) {
+        const shade = 8 + (number - 232) * 10;
+        color = "rgb(" + shade + "," + shade + "," + shade + ")";
+      } else {
+        const value = number - 16;
+        const red = Math.floor(value / 36);
+        const green = Math.floor((value % 36) / 6);
+        const blue = value % 6;
+        const levels = [0, 95, 135, 175, 215, 255];
+        color = "rgb(" + levels[red] + "," + levels[green] + "," + levels[blue] + ")";
+      }
+
+      colorCache.set(number, color);
+      return color;
+    }
+
+    function resizeCanvas() {
+      const bounds = canvas.getBoundingClientRect();
+      const devicePixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      const fontSize = Math.max(10, Math.min(20, bounds.width / 42));
+
+      canvas.width = Math.max(1, Math.round(bounds.width * devicePixelRatio));
+      canvas.height = Math.max(1, Math.round(bounds.height * devicePixelRatio));
+      context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+      context.textBaseline = "top";
+      context.textAlign = "left";
+      context.font = fontSize + 'px "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace';
+
+      const cellWidth = Math.max(6, context.measureText("M").width);
+      const cellHeight = fontSize * 1.28;
+
+      layout = {
+        width: bounds.width,
+        height: bounds.height,
+        fontSize: fontSize,
+        cellWidth: cellWidth,
+        cellHeight: cellHeight,
+        columns: Math.max(20, Math.floor(bounds.width / cellWidth)),
+        rows: Math.max(12, Math.floor(bounds.height / cellHeight))
+      };
+    }
+
+    function renderFrame(time) {
+      if (!layout) {
+        return;
+      }
+
+      const columns = layout.columns;
+      const rows = layout.rows;
+      const characters = [];
+      const colors = [];
+      const depth = [];
+
+      for (let row = 0; row < rows; row += 1) {
+        characters.push(new Array(columns).fill(" "));
+        colors.push(new Array(columns).fill(0));
+        depth.push(new Array(columns).fill(-1e9));
+      }
+
+      const viewRows = rows - 2;
+      const scale = Math.max(
+        1,
+        Math.min((viewRows - 2) / 1.45, (columns - 2) / 2.7)
+      );
+      const xScale = scale * 2;
+      const centerX = columns / 2;
+      const centerY = 1 + 0.78 * scale;
+      const angle = time * SPIN_SPEED;
+      const cosine = Math.cos(angle);
+      const sine = Math.sin(angle);
+      const tiltCosine = Math.cos(TILT);
+      const tiltSine = Math.sin(TILT);
+
+      function project(x, y, z) {
+        const rotatedX = x * cosine - z * sine;
+        const rotatedZ = x * sine + z * cosine;
+        const pivotY = y - PIVOT_Y;
+        const tiltedY = pivotY * tiltCosine - rotatedZ * tiltSine;
+        const tiltedZ = pivotY * tiltSine + rotatedZ * tiltCosine;
+        const perspective = CAM_DIST / (CAM_DIST - tiltedZ);
+        return [
+          Math.floor(centerX + rotatedX * perspective * xScale),
+          Math.floor(centerY - tiltedY * perspective * scale),
+          tiltedZ
+        ];
+      }
+
+      function projectFloat(x, y, z) {
+        const rotatedX = x * cosine - z * sine;
+        const rotatedZ = x * sine + z * cosine;
+        const pivotY = y - PIVOT_Y;
+        const tiltedY = pivotY * tiltCosine - rotatedZ * tiltSine;
+        const tiltedZ = pivotY * tiltSine + rotatedZ * tiltCosine;
+        const perspective = CAM_DIST / (CAM_DIST - tiltedZ);
+        return [
+          centerX + rotatedX * perspective * xScale,
+          centerY - tiltedY * perspective * scale,
+          tiltedZ,
+          perspective
+        ];
+      }
+
+      function plot(column, row, z, character, color) {
+        if (
+          row >= 0 &&
+          row < viewRows &&
+          column >= 0 &&
+          column < columns &&
+          z > depth[row][column]
+        ) {
+          depth[row][column] = z;
+          characters[row][column] = character;
+          colors[row][column] = color;
+        }
+      }
+
+      hearts.forEach(function (heart) {
+        let column = Math.floor(
+          (heart.x + 0.015 * Math.sin(time * 1.2 + heart.phase)) * columns
+        ) % columns;
+        if (column < 0) {
+          column += columns;
+        }
+        plot(column, Math.floor(heart.y * viewRows), -50, "♥", heart.color);
+      });
+
+      scene.points.forEach(function (point) {
+        const projected = project(
+          point.position[0],
+          point.position[1],
+          point.position[2]
+        );
+        const column = projected[0];
+        const row = projected[1];
+        const z = projected[2];
+        const rotatedNormalX = point.normal[0] * cosine - point.normal[2] * sine;
+        const rotatedNormalZ = point.normal[0] * sine + point.normal[2] * cosine;
+        const tiltedNormalY = point.normal[1] * tiltCosine - rotatedNormalZ * tiltSine;
+        const tiltedNormalZ = point.normal[1] * tiltSine + rotatedNormalZ * tiltCosine;
+        let brightness =
+          0.25 +
+          0.75 * Math.max(0, rotatedNormalX * LX + tiltedNormalY * LY + tiltedNormalZ * LZ) +
+          point.tone;
+
+        if (point.twoSided) {
+          const dot = rotatedNormalX * LX + tiltedNormalY * LY + tiltedNormalZ * LZ;
+          if (dot < 0) {
+            brightness = 0.25 + 0.75 * (-dot * 0.55) + point.tone;
+          }
+        }
+
+        brightness = Math.min(0.999, Math.max(0, brightness));
+        const paletteIndex = Math.min(
+          point.palette.length - 1,
+          Math.floor(brightness * point.palette.length)
+        );
+        const character = point.override === null
+          ? SHADE[Math.min(SHADE.length - 1, Math.floor(brightness * SHADE.length))]
+          : point.override;
+        plot(column, row, z, character, point.palette[paletteIndex]);
+      });
+
+      scene.flowers.forEach(function (flower) {
+        const projected = projectFloat(
+          flower.position[0],
+          flower.position[1],
+          flower.position[2]
+        );
+        const flowerX = projected[0];
+        const flowerY = projected[1];
+        const z = projected[2];
+        const perspective = projected[3];
+        const radiusX = flower.radius * perspective * xScale;
+        const radiusY = flower.radius * perspective * scale;
+        const dim = -0.4 * (1 - Math.min(1, Math.max(0, (z + 0.6) / 1.2)));
+        const rotation = flower.seed + angle * 0.7;
+
+        for (let row = Math.floor(flowerY - radiusY) - 1; row < Math.floor(flowerY + radiusY) + 2; row += 1) {
+          const dy = (row + 0.5 - flowerY) / radiusY;
+          for (let column = Math.floor(flowerX - radiusX) - 1; column < Math.floor(flowerX + radiusX) + 2; column += 1) {
+            const dx = (column + 0.5 - flowerX) / radiusX;
+
+            if (flower.kind === "disc") {
+              const distance = Math.sqrt(dx * dx + dy * dy);
+              if (distance > 1) {
+                continue;
+              }
+
+              if (distance < 0.3) {
+                let brightness = 0.55 - 0.35 * dx - 0.35 * dy + dim;
+                brightness = Math.min(0.999, Math.max(0, brightness));
+                const centerIndex = Math.min(
+                  flower.centerPalette.length - 1,
+                  Math.floor(brightness * flower.centerPalette.length)
+                );
+                plot(
+                  column,
+                  row,
+                  z + 0.06,
+                  distance < 0.17 ? "@" : "o",
+                  flower.centerPalette[centerIndex]
+                );
+                continue;
+              }
+
+              const phase = Math.atan2(dy, dx);
+              const reach =
+                0.32 +
+                0.68 * Math.pow(
+                  Math.abs(Math.cos(flower.petals * (phase + rotation) / 2)),
+                  0.7
+                );
+              if (distance > reach) {
+                continue;
+              }
+
+              const edge = distance > reach - 0.14 ? -0.22 : 0;
+              let brightness = 0.62 - 0.22 * dx - 0.28 * dy + 0.12 * distance + edge + dim;
+              brightness = Math.min(0.999, Math.max(0, brightness));
+              const petalIndex = Math.min(
+                flower.palette.length - 1,
+                Math.floor(brightness * flower.palette.length)
+              );
+              const petalCharacter = PETAL_SHADE[
+                Math.min(PETAL_SHADE.length - 1, Math.floor(brightness * PETAL_SHADE.length))
+              ];
+              plot(
+                column,
+                row,
+                z + 0.04 * (1 - distance),
+                petalCharacter,
+                flower.palette[petalIndex]
+              );
+            } else {
+              const value = (1 - dy) / 2;
+              if (value < 0 || value > 1) {
+                continue;
+              }
+
+              const halfWidth = 0.62 * Math.sin(
+                Math.PI * 0.5 * Math.min(1, value * 1.5 + 0.05)
+              );
+              if (halfWidth <= 0 || Math.abs(dx) > halfWidth) {
+                continue;
+              }
+
+              const normalizedX = dx / halfWidth;
+              if (
+                value >
+                0.72 + 0.28 * Math.pow(Math.cos(1.5 * Math.PI * normalizedX), 2)
+              ) {
+                continue;
+              }
+
+              const seam =
+                Math.abs(Math.abs(normalizedX) - 0.33) < 0.12 && value > 0.3
+                  ? -0.25
+                  : 0;
+              let brightness = 0.55 - 0.3 * normalizedX + 0.1 * value + seam + dim;
+              brightness = Math.min(0.999, Math.max(0, brightness));
+              const petalIndex = Math.min(
+                flower.palette.length - 1,
+                Math.floor(brightness * flower.palette.length)
+              );
+              const petalCharacter = PETAL_SHADE[
+                Math.min(PETAL_SHADE.length - 1, Math.floor(brightness * PETAL_SHADE.length))
+              ];
+              plot(column, row, z + 0.03, petalCharacter, flower.palette[petalIndex]);
+            }
+          }
+        }
+      });
+
+      scene.babies.forEach(function (baby) {
+        const projected = project(
+          baby.position[0],
+          baby.position[1],
+          baby.position[2]
+        );
+        const twinkling = Math.sin(time * 2 + baby.phase) > 0.6;
+        plot(projected[0], projected[1], projected[2] + 0.02, twinkling ? "*" : "·", twinkling ? 231 : 255);
+      });
+
+      scene.sparkles.forEach(function (sparkle) {
+        const projected = project(
+          sparkle.position[0],
+          sparkle.position[1],
+          sparkle.position[2]
+        );
+        const twinkle = Math.sin(time * sparkle.speed + sparkle.phase);
+        if (twinkle > 0.85) {
+          plot(projected[0], projected[1], projected[2], "*", 231);
+        } else if (twinkle > 0.4) {
+          plot(projected[0], projected[1], projected[2], "+", 225);
+        } else if (twinkle > 0) {
+          plot(projected[0], projected[1], projected[2], "·", 218);
+        }
+      });
+
+      const messageCharacters = Array.from(currentMessage);
+      const messageRow = rows - 2;
+      const messageStart = Math.max(0, Math.floor((columns - messageCharacters.length) / 2));
+      const messageShift = Math.floor(time * 6);
+      messageCharacters.forEach(function (character, index) {
+        if (messageStart + index < columns) {
+          characters[messageRow][messageStart + index] = character;
+          colors[messageRow][messageStart + index] =
+            MSG_COLORS[(index + messageShift) % MSG_COLORS.length];
+        }
+      });
+
+      const hint = "@Jqs3f on tiktok!";
+      const hintCharacters = Array.from(hint);
+      const hintRow = rows - 1;
+      const hintStart = Math.max(0, Math.floor((columns - hintCharacters.length) / 2));
+      hintCharacters.forEach(function (character, index) {
+        if (hintStart + index < columns) {
+          characters[hintRow][hintStart + index] = character;
+          colors[hintRow][hintStart + index] = 238;
+        }
+      });
+
+      context.clearRect(0, 0, layout.width, layout.height);
+      context.fillStyle = "#050505";
+      context.fillRect(0, 0, layout.width, layout.height);
+      context.font = layout.fontSize + 'px "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace';
+
+      for (let row = 0; row < rows; row += 1) {
+        for (let column = 0; column < columns; column += 1) {
+          const character = characters[row][column];
+          if (character !== " ") {
+            context.fillStyle = ansi256(colors[row][column]);
+            context.fillText(
+              character,
+              column * layout.cellWidth,
+              row * layout.cellHeight
+            );
+          }
+        }
+      }
+    }
+
+    playButton.addEventListener("click", function () {
+      paused = !paused;
+      playButton.textContent = paused ? "Play" : "Pause";
+      setStatus(paused ? "Animation paused" : "Animation playing");
+    });
+
+    shareButton.addEventListener("click", function () {
+      if (window.location.protocol === "file:") {
+        setStatus("Publish this page before sharing a link");
+        return;
+      }
+
+      const shareUrl = new URL(window.location.href);
+      shareUrl.search = "";
+      shareUrl.hash = "";
+      const shareData = {
+        title: "ASCII Flower Bouquet",
+        text: currentMessage,
+        url: shareUrl.toString()
+      };
+
+      if (navigator.share) {
+        navigator.share(shareData).catch(function () {});
+      } else if (navigator.clipboard) {
+        navigator.clipboard.writeText(shareUrl.toString()).then(function () {
+          setStatus("Link copied");
+        }).catch(function () {
+          setStatus("Copy the address bar link");
+        });
+      } else {
+        setStatus("Copy the address bar link");
+      }
+    });
+
+    window.addEventListener("resize", function () {
+      resizeCanvas();
+      renderFrame(elapsed);
+    });
+
+    function animationLoop(now) {
+      const deltaTime = Math.min(0.1, Math.max(0, (now - previousTime) / 1000));
+      previousTime = now;
+
+      if (!paused) {
+        elapsed += deltaTime;
+        updateHearts(deltaTime);
+      }
+
+      frameAccumulator += deltaTime;
+      if (frameAccumulator >= 1 / FPS) {
+        frameAccumulator = 0;
+        renderFrame(elapsed);
+      }
+
+      window.requestAnimationFrame(animationLoop);
+    }
+
+    resizeCanvas();
+    updateHearts(0);
+    renderFrame(0);
+    window.requestAnimationFrame(animationLoop);
+  </script>
+</body>
+</html>
